@@ -1,10 +1,10 @@
 # ppkg_happiness
 https://www.youtube.com/watch?v=7xzU9Qqdqww
 
-#install
+# install
 pip3 install git+https://github.com/wmetcalf/ppkg_happiness.git
 
-#usage
+# usage
 ```
 ppkg-happiness -i /home/coz/Downloads/5f8f8a868b25435b37e632b4e4e3b23f24092cbf075d7c0d9b7b960615738c7c.ppkg -d dump -j dump.json
 {
