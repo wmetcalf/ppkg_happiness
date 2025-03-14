@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import sys
@@ -182,28 +183,22 @@ BIG_DUMB_CUP = [
 
 
 class PpkgPursuitOfHappiness:
-    """
-    - Returns a JSON-like dict. On errors, returns empty or partial structure + error info.
-    """
 
     def __init__(self, input_file, output_dir, json_file=None):
         self.ppkg_path = input_file
         self.output_dir = output_dir
         self.json_file = json_file
-
-        # Our final JSON-like data structure
-        self.final_report = {"ppkgMetadata": {}, "commands": [], "fileDetails": [], "copiedDataAssets": []}  # from <PackageConfig>
+        self.final_report = {"images": []}
 
     def _get_mime_type(self, file_path):
         try:
             return magic.from_file(file_path, mime=True)
-        except:
+        except Exception:
             return "application/octet-stream"
 
     def _extract_with_7z(self, extract_dir):
         cmd = ["7z", "x", "-y", f"-o{extract_dir}", self.ppkg_path]
-        with open(os.devnull, "wb") as devnull:
-            subprocess.run(cmd, check=True, stdout=devnull, stderr=devnull)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _compute_hashes(self, file_path):
         chunk_size = 1024 * 1024
@@ -239,16 +234,12 @@ class PpkgPursuitOfHappiness:
             for child in node.find_all(recursive=False):
                 if not child.name:
                     continue
-
                 child_name = child.name
-
                 sub_children = [c for c in child.find_all(recursive=False) if c.name]
-
                 if sub_children:
                     val = parse_node(child)
                 else:
                     val = child.get_text(strip=True)
-
                 if child_name in result_data:
                     existing = result_data[child_name]
                     if not isinstance(existing, list):
@@ -256,7 +247,6 @@ class PpkgPursuitOfHappiness:
                     result_data[child_name].append(val)
                 else:
                     result_data[child_name] = val
-
             return result_data
 
         result = parse_node(pkg_config)
@@ -265,7 +255,6 @@ class PpkgPursuitOfHappiness:
     def _parse_dataasset_xml_structured(self, soup):
         structured_elements = []
         discovered_paths = set()
-
         elements = soup.find_all("Element")
         for elem in elements:
             elem_index = elem.get("Index", "").strip()
@@ -279,9 +268,7 @@ class PpkgPursuitOfHappiness:
                     discovered_paths.add(k)
                 if v:
                     discovered_paths.add(v)
-
             structured_elements.append({"index": elem_index, "metadata": meta_map})
-
         return (structured_elements, list(discovered_paths))
 
     def _parse_dataasset_xml_fallback(self, soup):
@@ -314,27 +301,21 @@ class PpkgPursuitOfHappiness:
         results = []
         if not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir, exist_ok=True)
-
         file_map = {}
         for root, _, files in os.walk(extracted_root):
             for filename in files:
                 file_map[filename.lower()] = os.path.join(root, filename)
-
         for ref in refs:
             base = os.path.basename(ref).lower()
             if base in file_map:
                 src_path = file_map[base]
-
-                # rename duplicates
                 base_name_no_ext, ext = os.path.splitext(os.path.basename(src_path))
                 unique_filename = os.path.basename(src_path)
                 counter = 1
                 while os.path.exists(os.path.join(self.output_dir, unique_filename)):
                     unique_filename = f"{base_name_no_ext}_{counter}{ext}"
                     counter += 1
-
                 dst_path = os.path.join(self.output_dir, unique_filename)
-
                 try:
                     shutil.copy2(src_path, dst_path)
                     h = self._compute_hashes(dst_path)
@@ -350,7 +331,7 @@ class PpkgPursuitOfHappiness:
                             "mime_type": mtype,
                         }
                     )
-                except Exception as ex:
+                except Exception:
                     pass
         return results
 
@@ -358,83 +339,68 @@ class PpkgPursuitOfHappiness:
         try:
             mime_check = self._get_mime_type(self.ppkg_path)
             if mime_check != "application/x-ms-wim":
-                self.final_report.clear()
-                self.final_report["error"] = f"Incorrect MIME type: {mime_check}"
-                return self.final_report
-
+                return {"error": f"Incorrect MIME type: {mime_check}"}
             with tempfile.TemporaryDirectory() as tmpdir:
                 try:
                     self._extract_with_7z(tmpdir)
                 except subprocess.CalledProcessError as e:
-                    self.final_report.clear()
-                    self.final_report["error"] = f"7-Zip extraction failed: {e}"
-                    return self.final_report
+                    return {"error": f"7-Zip extraction failed: {e}"}
+                entries = os.listdir(tmpdir)
+                image_dirs = sorted([d for d in entries if d.isdigit()], key=lambda d: int(d))
+                images_paths = [os.path.join(tmpdir, d) for d in image_dirs] if image_dirs else [tmpdir]
+                for idx, image_path in enumerate(images_paths, start=1):
+                    image_metadata = {}
+                    image_commands = []
+                    image_asset_refs = []
+                    image_file_details = []
+                    found_pkg_config = False
 
-                target_files = []
-                for root, _, files in os.walk(tmpdir):
-                    for f in files:
-                        lf = f.lower()
-                        if lf.endswith(".xml") or lf.endswith(".provxml"):
-                            target_files.append(os.path.join(root, f))
+                    for root, _, files in os.walk(image_path):
+                        for name in files:
+                            if name.lower().endswith((".xml", ".provxml")):
+                                xml_file = os.path.join(root, name)
+                                try:
+                                    with open(xml_file, "r", encoding="utf-8") as fh:
+                                        soup = BeautifulSoup(fh, "xml")
+                                except Exception:
+                                    continue
+                                if not found_pkg_config:
+                                    pcfg = self._parse_package_config(soup)
+                                    if pcfg:
+                                        image_metadata = pcfg
+                                        found_pkg_config = True
+                                cmds = self._parse_for_commands(soup)
+                                image_commands.extend(cmds)
+                                if soup.find("Elements", {"Type": "DataAsset"}):
+                                    s_elems, s_paths = self._parse_dataasset_xml_structured(soup)
+                                    fallback_refs = self._parse_dataasset_xml_fallback(soup)
+                                    refs = set(s_paths) | set(fallback_refs)
+                                else:
+                                    refs = set(self._parse_for_data_assets_fallback(soup))
+                                image_asset_refs.extend(refs)
+                                image_file_details.append(
+                                    {
+                                        "filePath": xml_file,
+                                        "commands": cmds,
+                                        "structuredDataAssets": s_elems if "s_elems" in locals() else [],
+                                        "dataAssetReferences": list(refs),
+                                    }
+                                )
 
-                all_cmds = []
-                all_asset_refs = []
-                file_details = []
-                found_pkg_config = False
-
-                for xml_path in target_files:
-                    try:
-                        with open(xml_path, "r", encoding="utf-8") as fh:
-                            soup = BeautifulSoup(fh, "xml")
-                    except Exception as ex:
-                        continue
-
-                    if not found_pkg_config:
-                        pcfg = self._parse_package_config(soup)
-                        if pcfg:
-                            self.final_report["ppkgMetadata"] = pcfg
-                            found_pkg_config = True
-
-                    cmds = self._parse_for_commands(soup)
-                    all_cmds.extend(cmds)
-
-                    data_refs = []
-                    structured_data_assets = []
-
-                    elements_tag = soup.find("Elements", {"Type": "DataAsset"})
-                    if elements_tag:
-                        s_elements, s_paths = self._parse_dataasset_xml_structured(soup)
-                        structured_data_assets = s_elements
-                        fallback_refs = self._parse_dataasset_xml_fallback(soup)
-                        combined = set(s_paths).union(set(fallback_refs))
-                        data_refs = list(combined)
-                    else:
-                        data_refs = self._parse_for_data_assets_fallback(soup)
-
-                    all_asset_refs.extend(data_refs)
-
-                    file_details.append(
+                    copied_assets = self._copy_data_assets(list(set(image_asset_refs)), image_path)
+                    self.final_report["images"].append(
                         {
-                            "filePath": xml_path,
-                            "commands": cmds,
-                            "structuredDataAssets": structured_data_assets,
-                            "dataAssetReferences": data_refs,
+                            "index": idx,
+                            "ppkgMetadata": image_metadata,
+                            "commands": sorted(set(image_commands)),
+                            "fileDetails": image_file_details,
+                            "copiedDataAssets": copied_assets,
                         }
                     )
-
-                self.final_report["commands"] = sorted(set(all_cmds))
-                self.final_report["fileDetails"] = file_details
-                unique_refs = list(set(all_asset_refs))
-                copied = self._copy_data_assets(unique_refs, tmpdir)
-                self.final_report["copiedDataAssets"] = copied
-
             return self.final_report
-
         except Exception as ex:
-            error_str = str(ex)[:200]  # limit length
-            self.final_report.clear()
-            self.final_report["error"] = f"Unexpected error: {error_str}"
-            return self.final_report
+            error_str = str(ex)
+            return {"error": f"Unexpected error: {error_str}"}
 
 
 def main():
@@ -446,10 +412,8 @@ def main():
 
     analyzer = PpkgPursuitOfHappiness(args.ppkg, args.output_dir, args.json_file)
     result = analyzer.ppkg_analyze()
-
     json_str = json.dumps(result, indent=4)
     print(json_str)
-
     if args.json_file:
         try:
             with open(args.json_file, "w", encoding="utf-8") as jf:
