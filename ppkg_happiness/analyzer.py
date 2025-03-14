@@ -9,7 +9,8 @@ import hashlib
 import argparse
 import tempfile
 import subprocess
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag, NavigableString
+import xmltodict
 
 BIG_DUMB_CUP = [
     ".exe",
@@ -183,11 +184,11 @@ BIG_DUMB_CUP = [
 
 
 class PpkgPursuitOfHappiness:
-
-    def __init__(self, input_file, output_dir, json_file=None):
+    def __init__(self, input_file, output_dir, json_file=None, dump_xml_json=False):
         self.ppkg_path = input_file
         self.output_dir = output_dir
         self.json_file = json_file
+        self.dump_xml_json = dump_xml_json
         self.final_report = {"images": []}
 
     def _get_mime_type(self, file_path):
@@ -345,9 +346,11 @@ class PpkgPursuitOfHappiness:
                     self._extract_with_7z(tmpdir)
                 except subprocess.CalledProcessError as e:
                     return {"error": f"7-Zip extraction failed: {e}"}
+
                 entries = os.listdir(tmpdir)
                 image_dirs = sorted([d for d in entries if d.isdigit()], key=lambda d: int(d))
                 images_paths = [os.path.join(tmpdir, d) for d in image_dirs] if image_dirs else [tmpdir]
+
                 for idx, image_path in enumerate(images_paths, start=1):
                     image_metadata = {}
                     image_commands = []
@@ -361,7 +364,8 @@ class PpkgPursuitOfHappiness:
                                 xml_file = os.path.join(root, name)
                                 try:
                                     with open(xml_file, "r", encoding="utf-8") as fh:
-                                        soup = BeautifulSoup(fh, "xml")
+                                        xml_str = fh.read()
+                                    soup = BeautifulSoup(xml_str, "xml")
                                 except Exception:
                                     continue
                                 if not found_pkg_config:
@@ -378,15 +382,18 @@ class PpkgPursuitOfHappiness:
                                 else:
                                     refs = set(self._parse_for_data_assets_fallback(soup))
                                 image_asset_refs.extend(refs)
-                                image_file_details.append(
-                                    {
-                                        "filePath": xml_file,
-                                        "commands": cmds,
-                                        "structuredDataAssets": s_elems if "s_elems" in locals() else [],
-                                        "dataAssetReferences": list(refs),
-                                    }
-                                )
-
+                                file_detail = {
+                                    "filePath": xml_file,
+                                    "commands": cmds,
+                                    "structuredDataAssets": s_elems if "s_elems" in locals() else [],
+                                    "dataAssetReferences": list(refs),
+                                }
+                                if self.dump_xml_json:
+                                    try:
+                                        file_detail["jsonRepresentation"] = xmltodict.parse(xml_str)
+                                    except Exception as e:
+                                        file_detail["jsonRepresentation"] = {"error": f"xmltodict parse error: {str(e)}"}
+                                image_file_details.append(file_detail)
                     copied_assets = self._copy_data_assets(list(set(image_asset_refs)), image_path)
                     self.final_report["images"].append(
                         {
@@ -408,9 +415,10 @@ def main():
     parser.add_argument("-i", required=True, help="Path to the PPKG file", dest="ppkg")
     parser.add_argument("-d", required=True, help="Directory to copy data assets", dest="output_dir")
     parser.add_argument("-j", help="Optional JSON output file", dest="json_file")
+    parser.add_argument("-a", action="store_true", help="Dump a JSON representation of each XML file found")
     args = parser.parse_args()
 
-    analyzer = PpkgPursuitOfHappiness(args.ppkg, args.output_dir, args.json_file)
+    analyzer = PpkgPursuitOfHappiness(args.ppkg, args.output_dir, args.json_file, dump_xml_json=args.a)
     result = analyzer.ppkg_analyze()
     json_str = json.dumps(result, indent=4)
     print(json_str)

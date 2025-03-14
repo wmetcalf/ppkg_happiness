@@ -9,6 +9,7 @@ setup(
     install_requires=[
         "python-magic",
         "beautifulsoup4",
+        "xmltodict",
     ],
     entry_points={
         "console_scripts": [
